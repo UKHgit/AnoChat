@@ -152,16 +152,18 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
           setTimeout(() => {
             update(ref(database, `rooms/${roomId}/messages/${newMessage.id}`), {
               read: true,
-            });
+            }).catch(err => console.error('Error marking message as read:', err));
           }, 500);
         }
       }
     };
 
+    // Attach listener
     onChildAdded(messagesRef, handleNewMessage);
 
+    // Return cleanup function that properly detaches listener
     return () => {
-      off(messagesRef, 'child_added', handleNewMessage);
+      off(messagesRef, 'child_added');
     };
   }, [roomId, messagesRef, username]);
 
@@ -171,12 +173,26 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
 
     const unsubscribe = onValue(usersRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) {
-        const usersList = Object.entries(data).map(([id, user]: any) => ({
-          id,
-          ...user,
-        }));
-        setUsers(usersList);
+      if (data && typeof data === 'object') {
+        // Filter valid users - only include objects with username
+        const usersList = Object.entries(data)
+          .filter(([_, user]: any) => user && typeof user === 'object' && user.username)
+          .map(([id, user]: any) => ({
+            id,
+            username: user.username || 'Anonymous',
+            isTyping: user.isTyping || false,
+            lastSeen: user.lastSeen || 0,
+            joined: user.joined || 0,
+          }));
+        
+        // Only update if there are actual users
+        if (usersList.length > 0) {
+          setUsers(usersList);
+          console.log(`✓ Users online: ${usersList.length} - ${usersList.map(u => u.username).join(', ')}`);
+        }
+      } else {
+        // No users in room yet
+        setUsers([]);
       }
     });
 
@@ -191,7 +207,7 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
     update(ref(database, `rooms/${roomId}/users/${userKey}`), {
       isTyping: true,
       lastSeen: Date.now(),
-    });
+    }).catch(err => console.error('Error updating typing status:', err));
 
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
@@ -200,7 +216,7 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
     typingTimeoutRef.current = setTimeout(() => {
       update(ref(database, `rooms/${roomId}/users/${userKey}`), {
         isTyping: false,
-      });
+      }).catch(err => console.error('Error clearing typing status:', err));
     }, 3000);
   }, [roomId, username]);
 
@@ -210,17 +226,19 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
     if (!inputMessage.trim() || isRoomLocked) return;
     if (!roomId || !username) return;
 
+    const messageText = inputMessage.trim();
+    
     try {
       // Stop typing indicator immediately
       const userKey = userIdRef.current;
       await update(ref(database, `rooms/${roomId}/users/${userKey}`), {
         isTyping: false,
-      });
+      }).catch(err => console.warn('Warning: Could not update typing status:', err));
 
       // Prepare message with validated timestamp
       const messageData = {
         username,
-        text: inputMessage.trim(),
+        text: messageText,
         timestamp: Date.now(), // Always set fresh timestamp
         read: false,
         ...(replyingTo && {
@@ -239,12 +257,12 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
         setInputMessage('');
         setReplyingTo(null);
       } else {
-        throw new Error('Failed to get message key');
+        throw new Error('Failed to get message key from Firebase');
       }
     } catch (error) {
       console.error('❌ Error sending message:', error);
-      // Show error to user but keep message in input for retry
-      alert('❌ Failed to send message. Please try again.');
+      // Keep message in input for user to retry
+      alert('❌ Failed to send message. Please check your connection and try again.');
     }
   };
 
