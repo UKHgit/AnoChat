@@ -39,9 +39,10 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userIdRef = useRef(Math.random().toString(36).substring(7));
 
-  const roomRef = ref(database, `rooms/${roomId}`);
-  const messagesRef = ref(database, `rooms/${roomId}/messages`);
-  const usersRef = ref(database, `rooms/${roomId}/users`);
+  // Create refs only when roomId is available
+  const roomRef = roomId ? ref(database, `rooms/${roomId}`) : null;
+  const messagesRef = roomId ? ref(database, `rooms/${roomId}/messages`) : null;
+  const usersRef = roomId ? ref(database, `rooms/${roomId}/users`) : null;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -126,7 +127,7 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
 
   // Listen to messages
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !messagesRef) return;
 
     const handleNewMessage = (snapshot: any) => {
       const data = snapshot.val();
@@ -138,8 +139,11 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
 
         const newMessage: Message = {
           id: snapshot.key || '',
-          ...data,
+          username: data.username || 'Anonymous',
+          text: data.text || '',
           timestamp, // Use validated timestamp
+          read: data.read || false,
+          ...(data.replyTo && { replyTo: data.replyTo }),
         };
         
         setMessages((prev) => {
@@ -150,9 +154,11 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
         // Mark as read after a short delay
         if (newMessage.username !== username) {
           setTimeout(() => {
-            update(ref(database, `rooms/${roomId}/messages/${newMessage.id}`), {
-              read: true,
-            }).catch(err => console.error('Error marking message as read:', err));
+            if (messagesRef) {
+              update(ref(database, `rooms/${roomId}/messages/${newMessage.id}`), {
+                read: true,
+              }).catch(err => console.error('Error marking message as read:', err));
+            }
           }, 500);
         }
       }
@@ -163,13 +169,15 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
 
     // Return cleanup function that properly detaches listener
     return () => {
-      off(messagesRef, 'child_added');
+      if (messagesRef) {
+        off(messagesRef, 'child_added');
+      }
     };
   }, [roomId, messagesRef, username]);
 
   // Listen to users
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !usersRef) return;
 
     const unsubscribe = onValue(usersRef, (snapshot) => {
       const data = snapshot.val();
@@ -224,16 +232,18 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
     e.preventDefault();
 
     if (!inputMessage.trim() || isRoomLocked) return;
-    if (!roomId || !username) return;
+    if (!roomId || !username || !messagesRef) return;
 
     const messageText = inputMessage.trim();
     
     try {
       // Stop typing indicator immediately
       const userKey = userIdRef.current;
-      await update(ref(database, `rooms/${roomId}/users/${userKey}`), {
-        isTyping: false,
-      }).catch(err => console.warn('Warning: Could not update typing status:', err));
+      if (usersRef) {
+        await update(ref(database, `rooms/${roomId}/users/${userKey}`), {
+          isTyping: false,
+        }).catch(err => console.warn('Warning: Could not update typing status:', err));
+      }
 
       // Prepare message with validated timestamp
       const messageData = {
@@ -267,7 +277,7 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
   };
 
   const toggleRoomLock = async () => {
-    if (!roomId) return;
+    if (!roomId || !roomRef) return;
     try {
       const newLockState = !isRoomLocked;
       await update(roomRef, { locked: newLockState });
@@ -278,7 +288,7 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
   };
 
   const clearChat = async () => {
-    if (!roomId) return;
+    if (!roomId || !messagesRef) return;
     if (window.confirm('🔥 Clear all messages? This cannot be undone!')) {
       try {
         await remove(messagesRef);
