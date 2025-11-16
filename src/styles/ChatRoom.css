@@ -306,15 +306,30 @@
   color: #ff00ff;
   font-size: 13px;
   animation: slideIn 0.3s ease-out;
+  margin: 5px 0;
 }
 
-.typing-indicator .username {
+.typing-message {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-style: italic;
+}
+
+.typing-indicator .typing-username {
   font-weight: bold;
+  color: #00ffff;
+  text-shadow: 0 0 8px #00ffff;
+}
+
+.typing-indicator .typing-text {
+  color: #ff00ff;
 }
 
 .typing-indicator .dots {
   display: flex;
   gap: 4px;
+  margin-left: 4px;
 }
 
 .typing-indicator .dots span {

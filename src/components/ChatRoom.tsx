@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { database } from '../firebase';
-import { ref, push, set, update, onValue, remove, onChildAdded, off } from 'firebase/database';
+import { ref, push, set, update, onValue, remove, onChildAdded, off, get } from 'firebase/database';
 import '../styles/ChatRoom.css';
 
 interface Message {
@@ -80,30 +80,35 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
     localStorage.setItem('username', username);
 
     return () => {
-      remove(ref(database, userPath));
-      
-      // Check if room is empty and DELETE EVERYTHING from database
-      setTimeout(() => {
-        const usersRef = ref(database, `${roomId}/users`);
-        onValue(usersRef, (snapshot) => {
-          const users = snapshot.val();
-          
-          // If no users left, delete ENTIRE room and ALL related data from database
-          if (!users || Object.keys(users).length === 0) {
-            // Delete everything: messages, users, lock status, metadata, ALL data
-            remove(ref(database, `rooms/${roomId}`)).then(() => {
+      // Remove this user from the database first
+      remove(ref(database, userPath)).then(() => {
+        // After user is removed, check if room is empty
+        setTimeout(async () => {
+          try {
+            const usersSnapshot = await get(ref(database, `rooms/${roomId}/users`));
+            const usersData = usersSnapshot.val();
+            
+            // If no users left, delete ENTIRE room and ALL related data
+            if (!usersData || Object.keys(usersData).length === 0) {
+              await remove(ref(database, `rooms/${roomId}`));
+              
               console.log(`🗑️🧹 COMPLETE DATABASE WIPE: Room "${roomId}" completely erased`);
+              console.log(`   ✓ Room name: DELETED`);
               console.log(`   ✓ Messages: DELETED`);
-              console.log(`   ✓ Users: DELETED`);
+              console.log(`   ✓ Users info: DELETED`);
               console.log(`   ✓ Lock status: DELETED`);
-              console.log(`   ✓ Metadata: DELETED`);
-              console.log(`   ✓ All room data: COMPLETELY GONE`);
-              console.log(`   ✓ Database entry: REMOVED`);
+              console.log(`   ✓ All metadata: DELETED`);
               console.log(`   ✓ NOTHING LEFT TO TRACE`);
-            });
+            } else {
+              console.log(`ℹ️ Room "${roomId}" still has ${Object.keys(usersData).length} user(s). Not deleting.`);
+            }
+          } catch (error) {
+            console.error('Error checking if room is empty:', error);
           }
-        }, { onlyOnce: true });
-      }, 500);
+        }, 300);
+      }).catch((error) => {
+        console.error('Error removing user from room:', error);
+      });
     };
   }, [username, roomId]);
 
@@ -126,9 +131,15 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
     const handleNewMessage = (snapshot: any) => {
       const data = snapshot.val();
       if (data) {
+        // Ensure timestamp is a valid number
+        const timestamp = typeof data.timestamp === 'number' && data.timestamp > 0 
+          ? data.timestamp 
+          : Date.now();
+
         const newMessage: Message = {
           id: snapshot.key || '',
           ...data,
+          timestamp, // Use validated timestamp
         };
         
         setMessages((prev) => {
@@ -199,31 +210,41 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
     if (!inputMessage.trim() || isRoomLocked) return;
     if (!roomId || !username) return;
 
-    const newMessage: Message = {
-      id: '',
-      username,
-      text: inputMessage.trim(),
-      timestamp: Date.now(),
-      read: false,
-      ...(replyingTo && {
-        replyTo: {
-          username: replyingTo.username,
-          text: replyingTo.text,
-        },
-      }),
-    };
-
     try {
-      await push(messagesRef, newMessage);
-      setInputMessage('');
-      setReplyingTo(null);
-
+      // Stop typing indicator immediately
       const userKey = userIdRef.current;
-      update(ref(database, `rooms/${roomId}/users/${userKey}`), {
+      await update(ref(database, `rooms/${roomId}/users/${userKey}`), {
         isTyping: false,
       });
+
+      // Prepare message with validated timestamp
+      const messageData = {
+        username,
+        text: inputMessage.trim(),
+        timestamp: Date.now(), // Always set fresh timestamp
+        read: false,
+        ...(replyingTo && {
+          replyTo: {
+            username: replyingTo.username,
+            text: replyingTo.text,
+          },
+        }),
+      };
+
+      // Send message with error handling
+      const messageRef = await push(messagesRef, messageData);
+      
+      if (messageRef.key) {
+        console.log(`✓ Message sent successfully: ${messageRef.key}`);
+        setInputMessage('');
+        setReplyingTo(null);
+      } else {
+        throw new Error('Failed to get message key');
+      }
     } catch (error) {
-      console.error('Error sending message:', error);
+      console.error('❌ Error sending message:', error);
+      // Show error to user but keep message in input for retry
+      alert('❌ Failed to send message. Please try again.');
     }
   };
 
@@ -332,7 +353,14 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
                     </div>
                     <div className="message-footer">
                       <span className="message-time">
-                        {new Date(message.timestamp).toLocaleTimeString()}
+                        {(() => {
+                          const date = new Date(message.timestamp);
+                          // Check if date is valid
+                          if (isNaN(date.getTime())) {
+                            return 'Invalid time';
+                          }
+                          return date.toLocaleTimeString();
+                        })()}
                       </span>
                       {message.username === username && (
                         <span className={`read-receipt ${message.read ? 'read' : 'sent'}`}>
@@ -350,12 +378,15 @@ const ChatRoom: React.FC<{ username: string }> = ({ username: initialUsername })
               .filter((u) => u.isTyping && u.username !== username)
               .map((user) => (
                 <div key={user.id} className="typing-indicator">
-                  <span className="username">{user.username}</span>
-                  <span className="dots">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </span>
+                  <div className="typing-message">
+                    <span className="typing-username">{user.username}</span>
+                    <span className="typing-text"> is typing</span>
+                    <span className="dots">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </span>
+                  </div>
                 </div>
               ))}
 
